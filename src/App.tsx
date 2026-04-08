@@ -4,12 +4,23 @@ import {
   Shield, Cpu, Globe, Key, Landmark, MapPin, ArrowRight, Scroll, Zap, 
   BookOpen, PenTool, Anchor, Terminal, Eye, Lock, Database, 
   Activity, Sparkles, ChevronRight, Binary, Layers, Compass, 
-  FileText, Users, History, Menu, X, Landmark as LandmarkIcon
+  FileText, Users, History, Menu, X, Landmark as LandmarkIcon,
+  CreditCard, Wallet, Receipt, CheckCircle2
 } from "lucide-react";
+import { loadStripe } from "@stripe/stripe-js";
+import {
+  Elements,
+  CardElement,
+  useStripe,
+  useElements,
+} from "@stripe/react-stripe-js";
+
+// Initialize Stripe
+const stripePromise = loadStripe((import.meta as any).env.VITE_STRIPE_PUBLISHABLE_KEY || "pk_test_placeholder");
 
 // --- Types ---
 
-type View = "codex" | "infrastructure" | "seed" | "bureau" | "commons" | "engagement";
+type View = "codex" | "infrastructure" | "seed" | "bureau" | "commons" | "engagement" | "treasury";
 
 // --- Components ---
 
@@ -23,6 +34,7 @@ const Navigation = ({ currentView, setView }: { currentView: View, setView: (v: 
     { id: "bureau", label: "Legacy Bureau" },
     { id: "commons", label: "The Commons" },
     { id: "engagement", label: "Engagement" },
+    { id: "treasury", label: "Treasury" },
   ];
 
   return (
@@ -93,7 +105,7 @@ const SectionHeader = ({ title, subtitle, icon: Icon }: { title: string, subtitl
 
 // --- Views ---
 
-const CodexView = () => (
+const CodexView = ({ setView }: { setView: (v: View) => void }) => (
   <div className="space-y-32">
     {/* Hero */}
     <section className="min-h-[80vh] flex flex-col justify-center relative">
@@ -117,10 +129,16 @@ const CodexView = () => (
           "The Codex exists to reimagine the flawed systems and policies that have perpetuated deep inequities. LGC LLC ordains the structural foundations required to move beyond the current crisis."
         </p>
         <div className="flex flex-wrap gap-6">
-          <button className="px-8 py-4 bg-[#c5a059] text-black font-mono text-xs uppercase tracking-[0.2em] hover:bg-[#d4b57a] transition-colors flex items-center gap-3">
+          <button 
+            onClick={() => setView("engagement")}
+            className="px-8 py-4 bg-[#c5a059] text-black font-mono text-xs uppercase tracking-[0.2em] hover:bg-[#d4b57a] transition-colors flex items-center gap-3"
+          >
             Establish Your Estate <ArrowRight className="w-4 h-4" />
           </button>
-          <button className="px-8 py-4 border border-white/10 hover:bg-white/5 transition-colors font-mono text-xs uppercase tracking-[0.2em] text-white">
+          <button 
+            onClick={() => setView("infrastructure")}
+            className="px-8 py-4 border border-white/10 hover:bg-white/5 transition-colors font-mono text-xs uppercase tracking-[0.2em] text-white"
+          >
             View Infrastructure
           </button>
         </div>
@@ -326,37 +344,294 @@ const CommonsView = () => (
   </div>
 );
 
-const EngagementView = () => (
-  <div className="space-y-24">
-    <SectionHeader title="The Engagement Portal" subtitle="Direct Intake for MDIs & CBOs" icon={PenTool} />
-    
-    <div className="max-w-3xl mx-auto charcoal-panel p-12">
-      <form className="space-y-8" onSubmit={(e) => e.preventDefault()}>
-        <div className="grid md:grid-cols-2 gap-8">
-          <div className="space-y-2">
-            <label className="text-[10px] font-mono uppercase tracking-widest text-slate-500">Entity Name</label>
-            <input type="text" className="w-full bg-white/5 border border-white/10 p-4 font-mono text-sm focus:border-[#c5a059] outline-none transition-colors" placeholder="LGC LLC" />
+const CheckoutForm = ({ amount, onSuccess }: { amount: number, onSuccess: () => void }) => {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [error, setError] = useState<string | null>(null);
+  const [processing, setProcessing] = useState(false);
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    if (!stripe || !elements) return;
+
+    setProcessing(true);
+
+    try {
+      const response = await fetch("/api/create-payment-intent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: amount * 100 }), // Stripe expects cents
+      });
+
+      const { clientSecret, error: backendError } = await response.json();
+
+      if (backendError) {
+        setError(backendError);
+        setProcessing(false);
+        return;
+      }
+
+      const { error: stripeError, paymentIntent } = await stripe.confirmCardPayment(clientSecret, {
+        payment_method: {
+          card: elements.getElement(CardElement) as any,
+        },
+      });
+
+      if (stripeError) {
+        setError(stripeError.message || "Payment failed");
+      } else if (paymentIntent.status === "succeeded") {
+        onSuccess();
+      }
+    } catch (err) {
+      setError("An unexpected error occurred.");
+    }
+
+    setProcessing(false);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-6">
+      <div className="p-4 bg-white/5 border border-white/10 rounded-sm">
+        <CardElement
+          options={{
+            style: {
+              base: {
+                fontSize: "16px",
+                color: "#cbd5e1",
+                fontFamily: "JetBrains Mono, monospace",
+                "::placeholder": {
+                  color: "#64748b",
+                },
+              },
+              invalid: {
+                color: "#ef4444",
+              },
+            },
+          }}
+        />
+      </div>
+      {error && <div className="text-xs font-mono text-red-500 uppercase tracking-widest">{error}</div>}
+      <button
+        type="submit"
+        disabled={!stripe || processing}
+        className="w-full py-4 bg-[#c5a059] text-black font-mono text-xs uppercase tracking-[0.2em] hover:bg-[#d4b57a] transition-colors disabled:opacity-50"
+      >
+        {processing ? "Processing Transaction..." : `Authorize $${amount}.00`}
+      </button>
+    </form>
+  );
+};
+
+const TreasuryView = () => {
+  const [amount, setAmount] = useState(100);
+  const [isSuccess, setIsSuccess] = useState(false);
+
+  const tiers = [
+    { label: "Sovereign Seed", amount: 50, desc: "Initial contribution to the CIaaS infrastructure." },
+    { label: "Legacy Builder", amount: 250, desc: "Standard tier for scaling community ecosystems." },
+    { label: "Architect Tier", amount: 1000, desc: "Premium allocation for large-scale legislative geometry." },
+  ];
+
+  if (isSuccess) {
+    return (
+      <div className="space-y-12 py-24 text-center">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="max-w-md mx-auto charcoal-panel p-12 border-t-4 border-t-green-500"
+        >
+          <div className="w-20 h-20 bg-green-500/10 rounded-full flex items-center justify-center mx-auto mb-8">
+            <CheckCircle2 className="w-10 h-10 text-green-500" />
           </div>
-          <div className="space-y-2">
-            <label className="text-[10px] font-mono uppercase tracking-widest text-slate-500">Entity Type</label>
-            <select className="w-full bg-white/5 border border-white/10 p-4 font-mono text-sm focus:border-[#c5a059] outline-none transition-colors">
-              <option>CBO (Community-Based Organization)</option>
-              <option>MDI (Minority Depository Institution)</option>
-              <option>Minority-Owned Entity</option>
-            </select>
+          <h2 className="text-3xl font-serif italic text-white mb-4">Transaction Confirmed</h2>
+          <p className="text-slate-400 font-light mb-8">
+            Your contribution has been recorded in the Legacy Ledger. The architecture of sovereignty is strengthened.
+          </p>
+          <button
+            onClick={() => setIsSuccess(false)}
+            className="text-[10px] font-mono uppercase tracking-widest text-[#c5a059] hover:text-white transition-colors"
+          >
+            New Transaction
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-24">
+      <SectionHeader title="The Treasury" subtitle="Capital Allocation Portal" icon={Wallet} />
+      
+      <div className="grid lg:grid-cols-2 gap-16">
+        <div className="space-y-12">
+          <p className="text-lg text-slate-400 leading-relaxed font-light">
+            Allocate capital to the Cultural Infrastructure as a Service (CIaaS) fund. Every transaction is a building block in the architecture of community sovereignty.
+          </p>
+          
+          <div className="space-y-4">
+            {tiers.map((tier) => (
+              <button
+                key={tier.amount}
+                onClick={() => setAmount(tier.amount)}
+                className={`w-full p-6 text-left border transition-all ${amount === tier.amount ? 'border-[#c5a059] bg-[#c5a059]/5' : 'border-white/5 bg-white/5 hover:border-white/20'}`}
+              >
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-sm font-mono uppercase tracking-widest text-white">{tier.label}</span>
+                  <span className="text-xl font-serif italic text-[#c5a059]">${tier.amount}</span>
+                </div>
+                <p className="text-xs text-slate-500 italic">{tier.desc}</p>
+              </button>
+            ))}
+          </div>
+
+          <div className="p-6 border border-white/5 bg-white/5">
+            <label className="text-[10px] font-mono uppercase tracking-widest text-slate-500 block mb-4">Custom Allocation ($)</label>
+            <input
+              type="number"
+              value={amount}
+              onChange={(e) => setAmount(Number(e.target.value))}
+              className="w-full bg-transparent border-b border-white/10 py-2 font-mono text-2xl text-[#c5a059] outline-none focus:border-[#c5a059] transition-colors"
+            />
           </div>
         </div>
-        <div className="space-y-2">
-          <label className="text-[10px] font-mono uppercase tracking-widest text-slate-500">Primary Objective</label>
-          <textarea className="w-full bg-white/5 border border-white/10 p-4 font-mono text-sm focus:border-[#c5a059] outline-none transition-colors h-32" placeholder="Describe your structural needs..."></textarea>
+
+        <div className="charcoal-panel p-12 flex flex-col justify-center">
+          <div className="mb-12">
+            <div className="flex items-center gap-3 mb-4">
+              <CreditCard className="w-5 h-5 text-[#c5a059]" />
+              <span className="text-[10px] font-mono uppercase tracking-widest text-slate-500">Secure Payment Gateway</span>
+            </div>
+            <h3 className="text-2xl font-serif italic text-white">Authorize Allocation</h3>
+          </div>
+
+          <Elements stripe={stripePromise}>
+            <CheckoutForm amount={amount} onSuccess={() => setIsSuccess(true)} />
+          </Elements>
+
+          <div className="mt-12 pt-8 border-t border-white/5 flex items-center gap-4 text-slate-600">
+            <Lock className="w-4 h-4" />
+            <span className="text-[9px] font-mono uppercase tracking-widest">Encrypted by Stripe Protocol</span>
+          </div>
         </div>
-        <button className="w-full py-4 bg-[#c5a059] text-black font-mono text-xs uppercase tracking-[0.2em] hover:bg-[#d4b57a] transition-colors">
-          Initiate Protocol
-        </button>
-      </form>
+      </div>
     </div>
-  </div>
-);
+  );
+};
+
+const EngagementView = () => {
+  const [status, setStatus] = useState<"idle" | "submitting" | "success" | "error">("idle");
+  const [message, setMessage] = useState("");
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setStatus("submitting");
+    
+    const formData = new FormData(e.currentTarget);
+    const data = {
+      entityName: formData.get("entityName"),
+      entityType: formData.get("entityType"),
+      objective: formData.get("objective"),
+    };
+
+    try {
+      const response = await fetch("/api/engage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+
+      const result = await response.json();
+      if (response.ok) {
+        setStatus("success");
+        setMessage(result.message);
+      } else {
+        setStatus("error");
+        setMessage(result.error || "Failed to initiate protocol.");
+      }
+    } catch (err) {
+      setStatus("error");
+      setMessage("Network error. Protocol interrupted.");
+    }
+  };
+
+  return (
+    <div className="space-y-24">
+      <SectionHeader title="The Engagement Portal" subtitle="Direct Intake for MDIs & CBOs" icon={PenTool} />
+      
+      <div className="max-w-3xl mx-auto charcoal-panel p-12">
+        {status === "success" ? (
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="text-center py-12"
+          >
+            <div className="w-16 h-16 border border-[#c5a059] rounded-full flex items-center justify-center mx-auto mb-6">
+              <Shield className="w-8 h-8 text-[#c5a059]" />
+            </div>
+            <h3 className="text-2xl font-serif italic text-white mb-4">Protocol Initiated</h3>
+            <p className="text-slate-400 font-light mb-8">{message}</p>
+            <button 
+              onClick={() => setStatus("idle")}
+              className="text-[10px] font-mono uppercase tracking-widest text-[#c5a059] hover:text-white transition-colors"
+            >
+              Return to Portal
+            </button>
+          </motion.div>
+        ) : (
+          <form className="space-y-8" onSubmit={handleSubmit}>
+            <div className="grid md:grid-cols-2 gap-8">
+              <div className="space-y-2">
+                <label className="text-[10px] font-mono uppercase tracking-widest text-slate-500">Entity Name</label>
+                <input 
+                  name="entityName"
+                  required
+                  type="text" 
+                  className="w-full bg-white/5 border border-white/10 p-4 font-mono text-sm focus:border-[#c5a059] outline-none transition-colors" 
+                  placeholder="LGC LLC" 
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-mono uppercase tracking-widest text-slate-500">Entity Type</label>
+                <select 
+                  name="entityType"
+                  className="w-full bg-white/5 border border-white/10 p-4 font-mono text-sm focus:border-[#c5a059] outline-none transition-colors"
+                >
+                  <option>CBO (Community-Based Organization)</option>
+                  <option>MDI (Minority Depository Institution)</option>
+                  <option>Minority-Owned Entity</option>
+                </select>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] font-mono uppercase tracking-widest text-slate-500">Primary Objective</label>
+              <textarea 
+                name="objective"
+                required
+                className="w-full bg-white/5 border border-white/10 p-4 font-mono text-sm focus:border-[#c5a059] outline-none transition-colors h-32" 
+                placeholder="Describe your structural needs..."
+              ></textarea>
+            </div>
+            
+            {status === "error" && (
+              <div className="text-xs font-mono text-red-500 uppercase tracking-widest">
+                Error: {message}
+              </div>
+            )}
+
+            <button 
+              disabled={status === "submitting"}
+              type="submit"
+              className="w-full py-4 bg-[#c5a059] text-black font-mono text-xs uppercase tracking-[0.2em] hover:bg-[#d4b57a] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {status === "submitting" ? "Initiating Protocol..." : "Initiate Protocol"}
+            </button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+};
 
 // --- Main App ---
 
@@ -380,12 +655,13 @@ export default function App() {
             exit={{ opacity: 0, x: -10 }}
             transition={{ duration: 0.4 }}
           >
-            {view === "codex" && <CodexView />}
+            {view === "codex" && <CodexView setView={setView} />}
             {view === "infrastructure" && <InfrastructureView />}
             {view === "seed" && <SeedView />}
             {view === "bureau" && <BureauView />}
             {view === "commons" && <CommonsView />}
             {view === "engagement" && <EngagementView />}
+            {view === "treasury" && <TreasuryView />}
           </motion.div>
         </AnimatePresence>
       </main>
